@@ -1,5 +1,3 @@
-# SIDR
+SIDR: A library for building a front end for a Drupal site with silex.
 
-Placeholder repo. Code coming soon. Watch this repo for more info.
-
-(Click "Watch" button in top right.)
+See the SIDR-Demo repo for an example of how to use this.

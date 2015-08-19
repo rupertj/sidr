@@ -1,0 +1,10 @@
+{
+  "name": "torchbox/sidr",
+  "version": "0.0.1",
+  "type": "package",
+  "autoload": {
+    "psr-4": {
+      "SIDR\\": "src"
+    }
+  }
+}
