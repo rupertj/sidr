@@ -312,4 +312,12 @@ class DrupalClient {
       ));
     }
   }
+
+  /**
+   * Delete a node.
+   * @param $nid
+   */
+  public function deleteNode($nid) {
+    $this->delete('entity_node/' . $nid);
+  }
 }
