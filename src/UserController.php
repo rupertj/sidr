@@ -10,8 +10,27 @@ class UserController {
 
   protected $app;
 
+  /** @var Array Default paths to redirect to after named events. */
+  protected $redirects;
+
+  public function __construct() {
+    $this->redirects = array(
+      'logout' => '/',
+      'register.success' => '/',
+      'already.registered' => '/user',
+    );
+
+    $this->messages = array(
+      'login.success' => 'You have been logged in',
+      'login.fail' => 'Log in failed. Please try again.',
+      'logout.success' => 'You have been logged out.',
+      'account.denied' => 'Please log in to view your account.',
+      'account.update.success' => 'Your account has been updated.',
+    );
+  }
+
   /**
-   * Displays the log in form to a user or redirects them appropriately.
+   * Logs a user in.
    * @param Request $request
    * @param Application $app
    * @return \Symfony\Component\HttpFoundation\RedirectResponse
@@ -21,7 +40,7 @@ class UserController {
 
     $this->app = $app;
 
-    $destination = $request->query->get('destination', '');
+    $destination = trim($request->query->get('destination', ''), '/');
 
     if ($app['drupal']->userIsLoggedIn()) {
       if (!$destination) {
@@ -45,7 +64,8 @@ class UserController {
       return $app->redirect('/');
     }
 
-    $destination = $request->request->get('destination', '/');
+    $fail_redirect = $request->request->get('fail_redirect', '');
+    $destination = $request->request->get('destination', '');
 
     // Failed log in throws an exception, so catch it here to avoid generic error.
     try {
@@ -63,12 +83,16 @@ class UserController {
       // Log in failed.
       if ($status == 401) {
 
-        $app['session']->getFlashBag()->add('message.alert', 'Log in failed. Please try again.');
+        $this->flashMessage('message.alert', 'login.fail');
 
-        $path = '/login';
-        if ($destination) {
-          $path .= '?destination=' . urlencode($destination);
+        $path = $fail_redirect;
+        if (!$fail_redirect) {
+          $path = '/login';
+          if ($destination) {
+            $path .= '?destination=' . urlencode($destination);
+          }
         }
+
         return $app->redirect($path);
       }
       else {
@@ -96,87 +120,9 @@ class UserController {
     }
     $app['session']->invalidate();
 
-    $app['session']->getFlashBag()->add('message.success', 'You have been logged out.');
+    $this->flashMessage('message.success', 'logout.success');
 
-    return $app->redirect('/login');
-  }
-
-  /**
-   * Account page.
-   * @param \Symfony\Component\HttpFoundation\Request $request
-   * @param \Silex\Application $app
-   * @return \Symfony\Component\HttpFoundation\RedirectResponse
-   */
-  public function viewAccount(Request $request, Application $app) {
-
-    $this->app = $app;
-
-    if (!$app['drupal']->userIsLoggedIn()) {
-      $app['session']->getFlashBag()->add('message.warning', 'Please log in to view your account.');
-      return $app->redirect('/login?destination=' . rawurlencode(trim($request->getPathInfo(), '/')));
-    }
-
-    $user = $app['session']->get('user');
-
-    // Sanity check. Are we "logged in" as anon? If so, kill the session and
-    // redirect to login page. @todo: Can we do this in the serviceprovider somehow?
-    if ($user['uid'] == 0) {
-      $app['session']->invalidate();
-      return $app->redirect('/login?destination=account');
-    }
-
-    return $app['twig']->render('account.twig', array(
-      'title' => $user['name'],
-      'user' => $user,
-    ));
-  }
-
-  public function updateAccount(Request $request, Application $app) {
-
-    $this->app = $app;
-
-    if (!$app['drupal']->userIsLoggedIn()) {
-      return $app->redirect('/login?destination=account');
-    }
-
-    $display_name = $request->request->get('display_name', FALSE);
-    $first_name = $request->request->get('first_name', FALSE);
-    $last_name = $request->request->get('last_name', FALSE);
-    $password = $request->request->get('password', FALSE);
-    $password_confirm = $request->request->get('password_confirm', FALSE);
-    $email = $request->request->get('email', FALSE);
-
-    $user = $app['session']->get('user', FALSE);
-
-    // Get the user again, just in case data's changed.
-    $response_raw = $this->app['drupal']->get('user/' . $user['uid'] .'.json');
-    $user = $response_raw->json();
-
-    // Drupal services module expects a data layout like the user edit form.
-    // NB integer fields post a different data structure to text fields for some reason.
-    $user['first_name']['und'][0]['value'] = $first_name;
-    $user['last_name']['und'][0]['value'] = $last_name;
-    $user['display_name']['und'][0]['value'] = $display_name;
-
-    // Mail is mail but also the Drupal username:
-    $user['mail'] = $email;
-    $user['name'] = $email;
-
-    if ($password != '******' && ($password == $password_confirm)) {
-      $user['pass'] = $password;
-    }
-
-    $response = $app['drupal']->put('user/' . $user['uid'], array(
-      'body' => json_encode($user),
-    ));
-
-    $app['session']->getFlashBag()->add('message.success', 'Your account has been updated.');
-
-    // Save updated user to the session.
-    $response_raw = $app['drupal']->get('user/' . $user['uid'] .'.json');
-    $app['session']->set('user', $response_raw->json());
-
-    return $app->redirect('/account');
+    return $app->redirect($this->redirects['logout']);
   }
 
   /**
@@ -197,7 +143,7 @@ class UserController {
       'token' => $response['token'],
     ));
 
-    $app['session']->getFlashBag()->add('message.success', 'You have been logged in');
+    $this->flashMessage('message.success', 'login.success');
   }
 
   /**
@@ -209,18 +155,17 @@ class UserController {
 
   /**
    * Displays the registration form.
-   * @param \Symfony\Component\HttpFoundation\Request $request
-   * @param \Silex\Application $app
+   * @param Request $request
+   * @param Application $app
+   * @return String
    */
   public function registerForm(Request $request, Application $app) {
 
-    $this->app = $app;
-
     if ($app['drupal']->userIsLoggedIn()) {
-      return $app->redirect('/account');
+      return $app->redirect($this->redirects['already.registered']);
     }
 
-    return $app['twig']->render('page-register.twig', array());
+    return $app['twig']->render('page-register.twig');
   }
 
   /**
@@ -243,12 +188,18 @@ class UserController {
     return $account;
   }
 
+  /**
+   * Accepts data from register form to create a new user.
+   * @param Request $request
+   * @param Application $app
+   * @return \Symfony\Component\HttpFoundation\RedirectResponse
+   */
   public function register(Request $request, Application $app) {
 
     $this->app = $app;
 
     if ($app['drupal']->userIsLoggedIn()) {
-      return $app->redirect('/account');
+      return $app->redirect('/account/settings');
     }
 
     $password = $request->request->get('password', '');
@@ -291,6 +242,10 @@ class UserController {
       }
     }
 
+    // Response is an array with keys ['uid'] and ['uri']
+    // uri like: http://bcss-drupal.local/services/user/10
+    // $response = $response_raw->json();
+
     // @todo: Need try/catch here, as new accounts are potentially blocked.
     // If that is the case, a \GuzzleHttp\Exception\ClientException is thrown with code 403.
 
@@ -308,13 +263,24 @@ class UserController {
 
     $response = $response_raw->json();
 
-    // Call the existing method to react to an authentication.
     $this->processAuthentication($response);
 
     // Mechanism to react to a successful registration.
-    // This is down here so it can run when the user is logged in.
+    // EG so BCSS can copy personalisation values saved in the session to
+    // the new user object. This is down here so it can run when the user is logged in.
     $this->processRegistration($account);
 
-    return $app->redirect('/account');
+    return $app->redirect($this->redirects['register.success']);
+  }
+
+  /**
+   * Displays a flash message.
+   * @param $message_type
+   * @param $message_name
+   */
+  public function flashMessage($message_type, $message_name) {
+    if (!empty($this->messages[$message_name])) {
+      $this->app['session']->getFlashBag()->add($message_type, $this->messages[$message_name]);
+    }
   }
 }
