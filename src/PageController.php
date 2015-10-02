@@ -7,7 +7,7 @@ use Symfony\Component\HttpFoundation\Request;
 
 class PageController {
 
-  public function viewFrontPage(Request $request, Application $app) {
+  public function frontPage(Request $request, Application $app) {
 
     $response = $app['drupal']->get('views/articles');
 

@@ -29,12 +29,17 @@ class NodeController {
 
       // Process the comments before we pass them to the template
       foreach ($comments as $key => $comment) {
+
+        $response_raw = $this->app['drupal']->get('user/' . $comment['uid'] .'.json');
+        $comment_author = $response_raw->json();
+
         $node['comments'][$comment['cid']] = $comment;
         $node['comments'][$comment['cid']]['created'] = date("jS F Y", $comment['created']);
         $exploded_thread = explode('.', $comment['thread']);
         $node['comments'][$comment['cid']]['depth'] = count($exploded_thread) - 1;
         $node['comments'][$comment['cid']]['thread_id'] = substr($exploded_thread[0], 0, 2);
         $node['comments'][$comment['cid']]['flag_action'] = isset($comment['flag_action']) ? $comment['flag_action'] : "blocked";
+        $node['comments'][$comment['cid']]['author'] = $comment_author['display_name']['und'][0]['safe_value'];
       }
 
       // Are any of the other comments children of the current comment?
@@ -43,7 +48,7 @@ class NodeController {
           // If the comment is in the same thread.
           if ($recurs_value['thread_id'] == $comment['thread_id'] && $recurs_value['depth'] > 0) {
             // @todo: sort the child comments by their actual thread values.
-            $node['comments'][$comment['cid']]['replies'][$recurs_value['cid']] = $recurs_value;
+            $node['comments'][$comment['cid']]['replies'][] = $recurs_value;
 
             // Remove the reply because we've copied it into the right place.
             unset($node['comments'][$recurs_key]);
@@ -146,11 +151,14 @@ class NodeController {
     return 'page-node.twig';
   }
 
+  /**
+   * Shows the node add form.
+   * @param Request $request
+   * @param Application $app
+   * @return \Symfony\Component\HttpFoundation\RedirectResponse
+   */
   public function add(Request $request, Application $app) {
 
-    $this->app = $app;
-
-    // @todo: Remove this application-specific assumption.
     if (!$app['drupal']->userIsLoggedIn()) {
       $app['session']->getFlashBag()->add('message.info', 'Please log in to create content.');
       return $app->redirect('/login?destination=' . rawurlencode(trim($request->getPathInfo(), '/')));
@@ -164,16 +172,38 @@ class NodeController {
     ));
   }
 
+  /**
+   * Submit method for the node add form.
+   * @param Request $request
+   * @param Application $app
+   * @return \Symfony\Component\HttpFoundation\RedirectResponse
+   */
   public function addSubmit(Request $request, Application $app) {
 
     $this->app = $app;
 
     $user = $app['session']->get('user', FALSE);
+    $destination = $app['request']->request->get('destination', '');
+
+    $node_title = $app['request']->request->get('title', '');
+    $node_body = $app['request']->request->get('content', '');
+
+    if (empty($node_title)) {
+      $app['session']->getFlashBag()->add('message.alert', "Title field is required.");
+    }
+
+    if (empty($node_body)) {
+      $app['session']->getFlashBag()->add('message.alert', "Description field is required.");
+    }
+
+    if (empty($node_title) || empty($node_body))  {
+      return $app->redirect('/' . $destination);
+    }
 
     $node = new \stdClass();
     $node->type = $app['request']->request->get('content_type', 'article');
-    $node->title = $app['request']->request->get('title', '');
-    $node->body['und'][0]['value'] = $app['request']->request->get('content', '');
+    $node->title = $node_title;
+    $node->body['und'][0]['value'] = $node_body;
     if ($user) {
       $node->uid = $user['uid'];
     }
@@ -186,13 +216,18 @@ class NodeController {
 
     $response = $response_raw->json();
 
-    // First reponse is nid and uri. Fetch the whole node for the path.
+    // First response is nid and uri. Fetch the whole node for the path.
     $response = $app['drupal']->get('node/' . $response['nid']);
     $node = $response->json();
 
-    $this->processSubmitResult($node);
+    $this->processSubmitResponse($node);
 
-    return $app->redirect($this->fixNodePath($node['path']));
+    if ($destination) {
+      return $app->redirect('/' . $destination);
+    }
+    else {
+      return $app->redirect($this->fixNodePath($node['path']));
+    }
   }
 
   /**
@@ -219,7 +254,7 @@ class NodeController {
       $response_raw = $app['drupal']->get('node/' . $node_id);
       $collection = $response_raw->json();
 
-      $collection['field_public']['und'][0]['value'] = $app['request']->request->get('public', '0');
+      $collection['public']['und'][0]['value'] = $app['request']->request->get('public', '0');
 
       // Save the collection with amended field.
       $this->app['drupal']->put('entity_node/' . $node_id, array(
@@ -279,7 +314,7 @@ class NodeController {
    * Implement this in a child class to react to a node being saved.
    * @param $node
    */
-  protected function processSubmitResult($node) {
+  protected function processSubmitResponse($node) {
 
   }
 }
