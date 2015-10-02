@@ -1,20 +1,31 @@
 <?php
 
-namespace SIDR;
+namespace SIDR\Controller;
 
 use Silex\Application;
 use Symfony\Component\HttpFoundation\Request;
 
 class SearchController {
 
-  public function search(Request $request, Application $app) {
+  /**
+   * @param Application $app
+   */
+  public function __construct(Application $app) {
+    $this->app = $app;
+    $this->request = $app['request'];
+    $this->solr = $app['solr'];
+  }
 
-    $solr = $app['solarium'];
+  /**
+   * Builds and returns a search results page.
+   * @return mixed
+   */
+  public function search() {
 
-    # $ping = $app['solarium']->createPing();
-    # $result = $app['solarium']->ping($ping);
+    $app = $this->app;
+    $solr = $this->solr;
 
-    $query = $solr->createQuery($solr::QUERY_SELECT);
+    $query = $solr->createQuery(\Solarium\Client::QUERY_SELECT);
 
     $query->setFields($this->fields());
 
@@ -39,12 +50,14 @@ class SearchController {
       'title' => 'Search',
       'result_count' => $results->getNumFound(),
       'results' => $rows,
+      'query_string' => $query_string
     ));
   }
 
   /**
    * Accepts the results from Solr and works on them before they're passed to the template.
    * @param $results
+   * @return String
    */
   protected function processResults($results) {
     $rows = array();

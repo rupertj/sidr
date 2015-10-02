@@ -1,6 +1,6 @@
 <?php
 
-namespace SIDR;
+namespace SIDR\Controller;
 
 use Silex\Application;
 use Symfony\Component\HttpFoundation\Request;
@@ -22,10 +22,11 @@ class UserController {
 
     $this->messages = array(
       'login.success' => 'You have been logged in',
-      'login.fail' => 'Log in failed. Please try again.',
+      'login.fail' => 'Sorry, we didn\'t recognise that email and password combination. Please try again',
       'logout.success' => 'You have been logged out.',
       'account.denied' => 'Please log in to view your account.',
       'account.update.success' => 'Your account has been updated.',
+      'password.reset.fail' => 'This password reset link has either expired or been used. Please try again.',
     );
   }
 
@@ -42,13 +43,13 @@ class UserController {
 
     $destination = trim($request->query->get('destination', ''), '/');
 
-    if ($app['drupal']->userIsLoggedIn()) {
-      if (!$destination) {
-        return $app->redirect('/');
+    if ($app['drupal.user']->isLoggedIn()) {
+
+      if (empty($destination)) {
+        $destination = '/';
       }
-      else {
-        return $app->redirect($destination);
-      }
+
+      return $app->redirect($destination);
     }
 
     return $app['twig']->render('page-login.twig', array(
@@ -60,7 +61,7 @@ class UserController {
 
     $this->app = $app;
 
-    if ($app['drupal']->userIsLoggedIn()) {
+    if ($app['drupal.user']->isLoggedIn()) {
       return $app->redirect('/');
     }
 
@@ -69,12 +70,9 @@ class UserController {
 
     // Failed log in throws an exception, so catch it here to avoid generic error.
     try {
-      $response_raw = $app['drupal']->post('user/login', [
-        'body' => json_encode([
-          'username' => $request->request->get('username', ''),
-          'password' => $request->request->get('password', ''),
-        ]),
-      ]);
+      $username = $request->request->get('username', '');
+      $password = $request->request->get('password', '');
+      $response = $app['drupal.user']->authenticate($username, $password);
     }
     catch (GuzzleHttp\Exception\ClientException $e) {
 
@@ -100,8 +98,6 @@ class UserController {
       }
     }
 
-    $response = $response_raw->json();
-
     $this->processAuthentication($response);
 
     return $app->redirect('/' . $destination);
@@ -109,17 +105,9 @@ class UserController {
 
   public function logout(Request $request, Application $app) {
 
-    $this->app = $app;
+    $app['drupal.user']->logout();
 
-    try {
-      $app['drupal']->post('user/logout');
-    }
-    catch (\Exception $e) {
-      // Swallow this exception. It'll only fail if the user is already logged out.
-      // In that case we may as well log the user out of the front end too and pretend the whole thing worked.
-    }
-    $app['session']->invalidate();
-
+    // Logout basically can't fail.
     $this->flashMessage('message.success', 'logout.success');
 
     return $app->redirect($this->redirects['logout']);
@@ -134,6 +122,8 @@ class UserController {
   protected function processAuthentication($response) {
 
     $app = $this->app;
+
+    // @todo: Move this to UserClient.
 
     $app['session']->set('user', $response['user']);
 
@@ -161,11 +151,15 @@ class UserController {
    */
   public function registerForm(Request $request, Application $app) {
 
-    if ($app['drupal']->userIsLoggedIn()) {
+    if ($app['drupal.user']->isLoggedIn()) {
       return $app->redirect($this->redirects['already.registered']);
     }
 
-    return $app['twig']->render('page-register.twig');
+    $destination = trim($request->query->get('destination', ''), '/');
+
+    return $app['twig']->render('page-register.twig', array(
+      'destination' => $destination,
+    ));
   }
 
   /**
@@ -198,7 +192,7 @@ class UserController {
 
     $this->app = $app;
 
-    if ($app['drupal']->userIsLoggedIn()) {
+    if ($app['drupal.user']->isLoggedIn()) {
       return $app->redirect('/account/settings');
     }
 
@@ -214,14 +208,8 @@ class UserController {
     // @todo: Validate user's email address.
     $account = $this->createAccountToRegister($request);
 
-    $request_body = [
-      'account' => $account,
-    ];
-
     try {
-      $response_raw = $app['drupal']->post('user/register', [
-        'body' => json_encode($request_body),
-      ]);
+      $app['drupal.user']->register($account);
     }
     catch (GuzzleHttp\Exception\ClientException $e) {
 
@@ -254,14 +242,8 @@ class UserController {
     // * Require e-mail verification when a visitor creates an account. Unchecked.
 
     // Re-use the login code and log the user straight in:
-    $response_raw = $app['drupal']->post('user/login', [
-      'body' => json_encode([
-        'username' => $account->name,
-        'password' => $account->pass,
-      ]),
-    ]);
 
-    $response = $response_raw->json();
+    $response = $app['drupal.user']->authenticate($account->name, $account->pass);
 
     $this->processAuthentication($response);
 
@@ -270,7 +252,13 @@ class UserController {
     // the new user object. This is down here so it can run when the user is logged in.
     $this->processRegistration($account);
 
-    return $app->redirect($this->redirects['register.success']);
+    $destination = $request->request->get('destination', '');
+    if ($destination) {
+      return $app->redirect($destination);
+    }
+    else {
+      return $app->redirect($this->redirects['register.success']);
+    }
   }
 
   /**
@@ -281,6 +269,56 @@ class UserController {
   public function flashMessage($message_type, $message_name) {
     if (!empty($this->messages[$message_name])) {
       $this->app['session']->getFlashBag()->add($message_type, $this->messages[$message_name]);
+    }
+  }
+
+  /**
+   * @param Request $request
+   * @param Application $app
+   * @return mixed
+   */
+  public function viewPasswordReset(Request $request, Application $app) {
+    return $app['twig']->render('password-reset.twig');
+  }
+
+  /**
+   * @param Request $request
+   * @param Application $app
+   * @return mixed
+   */
+  public function passwordReset(Request $request, Application $app) {
+
+    $name = $request->request->get('name', '');
+    $rtn = $app['drupal.user']->passwordReset($name);
+
+    // @todo: Don't assume this worked...
+    return $app['twig']->render('password-reset-result.twig');
+  }
+
+  public function passwordResetAuthenticateWithToken(Request $request, Application $app) {
+
+    $this->app = $app;
+
+    $uid = $request->attributes->get('uid');
+    $timestamp = $request->attributes->get('timestamp');
+    $hash = $request->attributes->get('hash');
+
+    try {
+      $response = $app['drupal.user']->checkPasswordReset($uid, $timestamp, $hash);
+      $this->processAuthentication($response);
+
+      // @todo: BCSSism. Override this properly when this code is backported to SIDR.
+      return $app->redirect('/account/settings');
+    }
+    catch (GuzzleHttp\Exception\ClientException $e) {
+
+      $status = $e->getResponse()->getStatusCode();
+
+      // Log in failed:
+      if ($status == 401) {
+        $this->flashMessage('message.alert', 'password.reset.fail');
+        return $app->redirect('/password-reset');
+      }
     }
   }
 }

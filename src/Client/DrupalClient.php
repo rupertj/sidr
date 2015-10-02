@@ -1,6 +1,6 @@
 <?php
 
-namespace SIDR;
+namespace SIDR\Client;
 
 use Silex\Application;
 use GuzzleHttp;
@@ -21,29 +21,26 @@ use GuzzleHttp;
 
 class DrupalClient {
 
-  /** @var  Application */
-  protected $app;
-
   /** @var  String */
   protected $backend;
 
   /** @var  String */
   protected $endpoint;
 
-  /** @var Array */
-  protected $terms;
-
   /** @var GuzzleHttp\Client **/
   protected $client;
 
-  public function __construct($app, array $config = []) {
-    $this->app = $app;
+  /** @var Timer */
+  protected $timer;
 
-    // @todo: Add support for a null cache or other caches. (PSR-6?)
-    $this->cache = $app['memcache'];
+  public function __construct($app, $guzzle_client, array $config = []) {
+    $this->client = $guzzle_client;
+    $this->timer = $app['timer'];
+    $this->add_xdebug_cookie = !empty($app['xdebug_backend_requests']);
+    $this->guzzle_debug = !empty($app['debug_backend_requests']);
 
-    // @todo: DI.
-    $this->client = new GuzzleHttp\Client($config);
+    // @todo: Session can probably be removed once all the user stuff is moved to UserClient?
+    $this->session = $app['session'];
   }
 
   public function setBackend($backend, $endpoint) {
@@ -55,11 +52,11 @@ class DrupalClient {
 
     $cookies = array();
 
-    if(!empty($this->app['xdebug_backend_requests'])) {
+    if($this->add_xdebug_cookie) {
       $cookies['XDEBUG_SESSION'] = 'netbeans-xdebug';
     }
 
-    $drupal_session = $this->app['session']->get('drupal');
+    $drupal_session = $this->session->get('drupal');
 
     if ($drupal_session) {
       $cookies[$drupal_session['session_name']] = $drupal_session['sessid'];
@@ -87,7 +84,7 @@ class DrupalClient {
     # $headers['X-CSRF-Token'] = $token_response->getBody();
     # $this->app['timer']->end();
 
-    $drupal_session = $this->app['session']->get('drupal');
+    $drupal_session = $this->session->get('drupal');
 
     if ($drupal_session) {
       $headers['X-CSRF-Token'] = $drupal_session['token'];
@@ -159,7 +156,7 @@ class DrupalClient {
       $options['headers'] = array_merge($headers, $options['headers']);
     }
 
-    $options['debug'] = !empty($this->app['debug_backend_requests']);
+    $options['debug'] = $this->guzzle_debug;
 
     // Default this option to true.
     if (!isset($options['prefix_endpoint'])) {
@@ -176,148 +173,10 @@ class DrupalClient {
     // Don't pass this to the client
     unset($options['prefix_endpoint']);
 
-    $this->app['timer']->start($url . ' ' . serialize($options));
+    $this->timer->start($url . ' ' . serialize($options));
     $response = $this->client->$method($backend . $url, $options);
-    $this->app['timer']->end();
+    $this->timer->end();
 
     return $response;
-  }
-
-  public function userIsLoggedIn() {
-    $user = $this->app['session']->get('user', FALSE);
-    return !empty($user);
-  }
-
-  /**
-   * Returns a flat list of terms for the requested vocabulary.
-   * Response is cached if a cache is available.
-   * @param $vocab_name Vocabulary machine name or Vocabulary ID.
-   * @return mixed
-   */
-  public function getTermsForVocab($vocab_name) {
-
-    // Check object first.
-    if (isset($this->terms[$vocab_name])) {
-      return $this->terms[$vocab_name];
-    }
-
-    // Then memcache.
-    $cache_key = 'vocab/' . $vocab_name;
-    $this->terms[$vocab_name] = $this->cache->get($cache_key);
-
-    if ($this->terms[$vocab_name]) {
-      return $this->terms[$vocab_name];
-    }
-
-    // Finally: Drupal.
-    $result_raw = $this->post('taxonomy_vocabulary/getTree', [
-      'body' => json_encode(array('vid' => $vocab_name)),
-    ]);
-
-    $result = $result_raw->json();
-
-    // Build an array indexed by tid, as it's more useful:
-    $terms = array();
-    foreach ($result as $term) {
-      $terms[$term['tid']] = $term;
-    }
-
-    $this->terms[$vocab_name] = $terms;
-
-    // If we hit Drupal, set the result in memcache.
-    $this->cache->set($cache_key, $this->terms[$vocab_name]);
-
-    return $this->terms[$vocab_name];
-  }
-
-  /**
-   * Returns a list of child terms of a specified parent.
-   * Terms will be sorted by weight.
-   * @param $vocab_name
-   * @param int $parent
-   * @return array
-   */
-  public function getTermsForVocabAtLevel($vocab_name, $parent = 0) {
-
-    $terms = $this->getTermsForVocab($vocab_name);
-
-    $terms_filtered = array();
-
-    foreach ($terms as $term) {
-
-      $this_parent = intval($term['parents'][0]);
-
-      if ($parent == $this_parent) {
-        $terms_filtered[] = $term;
-      }
-    }
-
-    // Sort terms by weight.
-    usort($terms_filtered, function ($a, $b) {
-      if ($a['weight'] == $b['weight']) {
-        return 0;
-      }
-      return ($a['weight'] > $b['weight']) ? 1 : -1;
-    });
-
-    return $terms_filtered;
-  }
-
-  /**
-   * Loads a node by ID.
-   * @param $nid ID of the node to load.
-   * @param bool $cache Whether to use the cache. Defaults to true.
-   */
-  public function getNode($nid, $cache = TRUE) {
-
-    if ($cache) {
-      $cache_key = 'node/' . $nid;
-      $cache_result = $this->cache->get($cache_key);
-
-      if ($cache_result) {
-        return $cache_result;
-      }
-    }
-
-    $node_response = $this->get('entity_node/' . $nid);
-    $node = $node_response->json();
-
-    if ($cache) {
-      $this->cache->set($cache_key, $node);
-    }
-
-    return $node;
-  }
-
-  /**
-   * Saves or updates a node as appropriate.
-   * @param $node
-   */
-  public function saveNode(&$node) {
-
-    if (empty($node['nid'])) {
-      // No nid, create one with a post.
-      $response_raw = $this->post('node.json', [
-        'body' => json_encode($node),
-      ]);
-
-      // Save the nid into the passed node so it can be used.
-      $response = $response_raw->json();
-      $node['nid'] = $response['nid'];
-    }
-    else {
-      // Nid is set, update with a put.
-      $this->put('entity_node/' . $node['nid'], array(
-        'body' => json_encode($node),
-      ));
-    }
-  }
-
-  /**
-   * Delete a node.
-   * @param $nid
-   */
-  public function deleteNode($nid) {
-    $this->delete('entity_node/' . $nid);
   }
 }

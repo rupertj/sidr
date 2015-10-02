@@ -1,6 +1,6 @@
 <?php
 
-namespace SIDR;
+namespace SIDR\Controller;
 
 use Silex\Application;
 use Symfony\Component\HttpFoundation\Request;
@@ -16,12 +16,14 @@ class NodeController {
    */
   public function getNodeByPath($path) {
 
+    $app = $this->app;
+
     // Pass prefix endpoint param, as we're passing the original path for this
     // content to Drupal and relying on sidr.module to intercept the request.
-    $response = $this->app['drupal']->get($path, array('prefix_endpoint' => FALSE));
+    $response = $app['drupal']->get($path, array('prefix_endpoint' => FALSE));
     $node = $response->json();
 
-    $comment_response = $this->app['drupal']->get('node/' . $node['nid'] . '/comments');
+    $comment_response = $app['drupal']->get('node/' . $node['nid'] . '/comments');
     $comments = $comment_response->json();
 
     if ($comments) {
@@ -30,16 +32,16 @@ class NodeController {
       // Process the comments before we pass them to the template
       foreach ($comments as $key => $comment) {
 
-        $response_raw = $this->app['drupal']->get('user/' . $comment['uid'] .'.json');
-        $comment_author = $response_raw->json();
-
-        $node['comments'][$comment['cid']] = $comment;
-        $node['comments'][$comment['cid']]['created'] = date("jS F Y", $comment['created']);
         $exploded_thread = explode('.', $comment['thread']);
-        $node['comments'][$comment['cid']]['depth'] = count($exploded_thread) - 1;
-        $node['comments'][$comment['cid']]['thread_id'] = substr($exploded_thread[0], 0, 2);
-        $node['comments'][$comment['cid']]['flag_action'] = isset($comment['flag_action']) ? $comment['flag_action'] : "blocked";
-        $node['comments'][$comment['cid']]['author'] = $comment_author['display_name']['und'][0]['safe_value'];
+
+        $comment_altered = $comment;
+        $comment_altered['created'] = date("jS F Y", $comment['created']);
+        $comment_altered['depth'] = count($exploded_thread) - 1;
+        $comment_altered['thread_id'] = substr($exploded_thread[0], 0, 2);
+        $comment_altered['flag_action'] = isset($comment['flag_action']) ? $comment['flag_action'] : "blocked";
+        $comment_altered['author'] = $comment['display_name'];
+
+        $node['comments'][$comment['cid']] = $comment_altered;
       }
 
       // Are any of the other comments children of the current comment?
@@ -63,8 +65,8 @@ class NodeController {
 
   /**
    * Views a node as a full page.
-   * @param \Symfony\Component\HttpFoundation\Request $request
-   * @param \Silex\Application $app
+   * @param Request $request
+   * @param Application $app
    * @return mixed
    */
   public function view(Request $request, Application $app) {
@@ -84,7 +86,7 @@ class NodeController {
 
       $status = $e->getResponse()->getStatusCode();
       if ($status == 404) {
-        return $this->app['twig']->render('404.twig', array(
+        return $app['twig']->render('404.twig', array(
           'title' => 'Page not found',
         ));
       }
@@ -159,7 +161,7 @@ class NodeController {
    */
   public function add(Request $request, Application $app) {
 
-    if (!$app['drupal']->userIsLoggedIn()) {
+    if (!$app['drupal.user']->isLoggedIn()) {
       $app['session']->getFlashBag()->add('message.info', 'Please log in to create content.');
       return $app->redirect('/login?destination=' . rawurlencode(trim($request->getPathInfo(), '/')));
     }
@@ -183,10 +185,10 @@ class NodeController {
     $this->app = $app;
 
     $user = $app['session']->get('user', FALSE);
-    $destination = $app['request']->request->get('destination', '');
+    $destination = $request->request->get('destination', '');
 
-    $node_title = $app['request']->request->get('title', '');
-    $node_body = $app['request']->request->get('content', '');
+    $node_title = $request->request->get('title', '');
+    $node_body = $request->request->get('content', '');
 
     if (empty($node_title)) {
       $app['session']->getFlashBag()->add('message.alert', "Title field is required.");
@@ -201,7 +203,7 @@ class NodeController {
     }
 
     $node = new \stdClass();
-    $node->type = $app['request']->request->get('content_type', 'article');
+    $node->type = $request->request->get('content_type', 'article');
     $node->title = $node_title;
     $node->body['und'][0]['value'] = $node_body;
     if ($user) {
@@ -244,36 +246,11 @@ class NodeController {
     // @todo: Populate
   }
 
-  public function editSubmit(Request $request, Application $app, $content_type, $node_id) {
-
-    $this->app = $app;
-
-    if ($content_type == 'collection') {
-
-      // Load up the existing collection.
-      $response_raw = $app['drupal']->get('node/' . $node_id);
-      $collection = $response_raw->json();
-
-      $collection['public']['und'][0]['value'] = $app['request']->request->get('public', '0');
-
-      // Save the collection with amended field.
-      $this->app['drupal']->put('entity_node/' . $node_id, array(
-        'body' => json_encode($collection),
-      ));
-
-      // @todo: write this message.
-      $app['session']->getFlashBag()->add('message.success', "Changed settings.");
-    }
-
-    // Redirect to where the form came from.
-    $destination = $app['request']->request->get('destination', '');
-    return $app->redirect('/' . $destination);
-
+  public function editSubmit(Request $request, Application $app) {
+    // @todo: Populate
   }
 
   public function delete(Request $request, Application $app) {
-
-    $this->app = $app;
 
     $content_type = $request->attributes->get('content_type', FALSE);
     $node_id = $request->attributes->get('node_id');
@@ -291,14 +268,13 @@ class NodeController {
 
     $nid = $request->attributes->get('node_id');
 
-    $response = $app['drupal']->delete('node/' . $nid);
-    $node = $response->json();
+    $this->processDeleteRequest($nid);
 
-    $app['session']->remove('collections');
+    $app['drupal']->deleteNode($nid);
+
     $app['session']->getFlashBag()->add('message.success', 'Success!');
 
     return $app->redirect('/collections');
-
   }
 
   /**
@@ -309,12 +285,19 @@ class NodeController {
 
   }
 
-
   /**
    * Implement this in a child class to react to a node being saved.
    * @param $node
    */
   protected function processSubmitResponse($node) {
+
+  }
+
+  /**
+   * Implement this in a child class to react to a node being deleted.
+   * @param $nid
+   */
+  protected function processDeleteRequest($nid) {
 
   }
 }

@@ -1,6 +1,6 @@
 <?php
 
-namespace SIDR;
+namespace SIDR\Controller;
 
 use Silex\Application;
 use Symfony\Component\HttpFoundation\Request;

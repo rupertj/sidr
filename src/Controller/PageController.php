@@ -1,6 +1,6 @@
 <?php
 
-namespace SIDR;
+namespace SIDR\Controller;
 
 use Silex\Application;
 use Symfony\Component\HttpFoundation\Request;
@@ -12,7 +12,7 @@ class PageController {
     $response = $app['drupal']->get('views/articles');
 
     return $app['twig']->render('view-articles.twig', array(
-      'title' => 'Front page title',
+      'title' => 'Blood Cancer Support Service',
       'rows' => $response->json(),
     ));
   }
